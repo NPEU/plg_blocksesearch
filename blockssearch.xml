@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<extension type="plugin" group="finder" method="upgrade">
+
+    <name>PLG_FINDER_BLOCKSSEARCH</name>
+    <author>Andy Kirk</author>
+    <authorEmail>andy.kirk@npeu.ox.ac.uk</authorEmail>
+    <authorUrl>https://www.npeu.ox.ac.uk</authorUrl>
+    <creationDate>May 2026</creationDate>
+    <copyright>(C) NPEU 2026</copyright>
+    <license>MIT License; see LICENSE.md</license>
+
+    <!--  The version string is recorded in the components table -->
+    <version>0.0.1</version>
+    <!-- The description is optional and defaults to the name -->
+    <description>PLG_FINDER_BLOCKSSEARCH_XML_DESCRIPTION</description>
+
+    <updateservers>
+        <!-- Note: No spaces or linebreaks allowed between the server tags -->
+        <server type="extension" name="NPEU: plg_blockssearch Update Site">https://raw.githubusercontent.com/NPEU/plg_blockssearch/main/update-manifest.xml</server>
+    </updateservers>
+
+    <namespace path="src">NPEU\Plugin\Finder\BlocksSearch</namespace>
+    <files>
+        <folder plugin="blockssearch">src</folder>
+        <folder>language</folder>
+        <folder>services</folder>
+    </files>
+
+</extension>
