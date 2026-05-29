@@ -25,7 +25,7 @@ return new class () implements ServiceProviderInterface {
                 $app = Factory::getApplication();
 
                 /** @var \Joomla\CMS\Plugin\CMSPlugin $plugin */
-                $plugin = new BespokeSearch(
+                $plugin = new BlocksSearch(
                     $dispatcher,
                     $config,
                     $database

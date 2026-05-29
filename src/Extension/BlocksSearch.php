@@ -27,6 +27,14 @@ use Joomla\Registry\Registry;
 use Joomla\Utilities\ArrayHelper;
 
 
+use Joomla\CMS\Log\Log;
+
+Log::addLogger(
+    array('text_file' => 'debug-blocksearch.php'),
+    Log::ALL,
+    array('plg_blockssearch') // change to your component/plugin name
+);
+
 /**
  * Allows indexing of certain Bespoke modules.
  */
@@ -49,7 +57,7 @@ final class BlocksSearch extends Adapter
      * @var    string
      * @since  2.5
      */
-    protected $context = 'BlockeSearch';
+    protected $context = 'BlocksSearch';
 
     /**
      * The extension name.
@@ -107,29 +115,38 @@ final class BlocksSearch extends Adapter
      */
     protected function getMenuItems()
     {
+
         $db = $this->getDatabase();
 
-        // Get the COM_DESPOKE component id:
+        // Get the COM_BLOCKS component id:
         $query = $db->getQuery(true);
         $query->select($db->quoteName('extension_id'))
               ->from($db->quoteName('#__extensions'))
-              ->where($db->quoteName('name') . ' = ' . $db->quote('COM_BLOCKS'));
+              ->where($db->quoteName('name') . ' = ' . $db->quote('com_blocks'));
         $db->setQuery($query);
 
+        #Log::add('query 1: ' . (string) $query, \Joomla\CMS\Log\Log::INFO, 'plg_blockssearch');
+
         $component_id = $db->loadResult();
+        #og::add('component_id: ' . (string) $component_id, \Joomla\CMS\Log\Log::INFO, 'plg_blockssearch');
 
         // Get all Blocks menu items:
         $query = $db->getQuery(true);
         $query->select($db->quoteName(['id', 'title', 'alias', 'path', 'link', 'params']))
               ->from($db->quoteName('#__menu'))
               ->where($db->quoteName('component_id') . ' = ' . $component_id)
-              ->andwhere($db->quoteName('access') . ' = 1')
-              ->andwhere($db->quoteName('published') . ' = 1');
+              ->where($db->quoteName('access') . ' = 1')
+              ->where($db->quoteName('published') . ' = 1');
         $db->setQuery($query);
+
+        #Log::add('query 2: ' . (string) $query, \Joomla\CMS\Log\Log::INFO, 'plg_blockssearch');
 
         $menu_items = $db->loadAssocList();
 
-        foreach ($menu_items as $key => &$menu_item) {
+        #Log::add('menu_items: ' . print_r($menu_items, true), \Joomla\CMS\Log\Log::INFO, 'plg_blockssearch');
+
+        foreach ($menu_items as $key => $menu_item) {
+            Log::add('START', \Joomla\CMS\Log\Log::INFO, 'plg_blockssearch');
             // Get all assigned module ids:
             $module_ids = [];
             $menu_item_params = json_decode($menu_item['params']);
@@ -139,7 +156,7 @@ final class BlocksSearch extends Adapter
                 continue;
             }
 
-            foreach ($menu_item_params->rws as $row) {
+            foreach ($menu_item_params->rows as $row) {
                 if (!empty($row->block_1_id)) {
                     $module_ids[] = $row->block_1_id;
                 }
@@ -153,16 +170,27 @@ final class BlocksSearch extends Adapter
                     $module_ids[] = $row->block_4_id;
                 }
             }
+
+            if (empty($module_ids)) {
+                continue;
+            }
+
             unset($menu_item['params']);
+
+            Log::add('module_ids: ' . print_r($module_ids, true), \Joomla\CMS\Log\Log::INFO, 'plg_blockssearch');
 
             // Get all module data:
             $query = $db->getQuery(true);
             $query->select('*')
                   ->from($db->quoteName('#__modules'))
                   ->where($db->quoteName('id') . ' IN (' . implode(',', $module_ids) . ')');
+            #Log::add('query 3: ' . (string) $query, \Joomla\CMS\Log\Log::INFO, 'plg_blockssearch');
+
             $db->setQuery($query);
 
             $modules = $db->loadAssocList();
+
+            #Log::add('modules: ' . print_r($modules, true), \Joomla\CMS\Log\Log::INFO, 'plg_blockssearch');
 
             $start_date = false;
             $summary = '';
@@ -187,14 +215,21 @@ final class BlocksSearch extends Adapter
                             : min($start_date, $module['publish_up']);
             }
 
+            #Log::add('summary: ' . $summary, \Joomla\CMS\Log\Log::INFO, 'plg_blockssearch');
+            #Log::add('start_date: ' . $start_date, \Joomla\CMS\Log\Log::INFO, 'plg_blockssearch');
             if (empty($summary)) {
                 unset($menu_items[$key]);
                 continue;
             }
 
             $menu_item['summary']    = $summary;
-            $menu_item['start_date'] = $start_date;
+            $menu_item['start_date'] = (empty($start_date)) ? '2026-03-05 17:57:18' : $start_date;
+            //$menu_item['start_date'] = '2026-03-05 17:57:18';
+
+            $menu_items[$key] = $menu_item;
         }
+
+        Log::add('menu_items (after): ' . print_r($menu_items, true), \Joomla\CMS\Log\Log::INFO, 'plg_blockssearch');
         return $menu_items;
     }
 
