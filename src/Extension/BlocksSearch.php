@@ -11,312 +11,362 @@ namespace NPEU\Plugin\Finder\BlocksSearch\Extension;
 
 \defined('_JEXEC') || die;
 
-use Joomla\CMS\Categories\Categories;
 use Joomla\CMS\Component\ComponentHelper;
-use Joomla\CMS\Table\Table;
+
+use Joomla\CMS\Event\Finder as FinderEvent;
+use Joomla\CMS\Plugin\CMSPlugin;
 use Joomla\Component\Finder\Administrator\Indexer\Adapter;
-use Joomla\Component\Finder\Administrator\Indexer\Helper;
 use Joomla\Component\Finder\Administrator\Indexer\Indexer;
 use Joomla\Component\Finder\Administrator\Indexer\Result;
-use Joomla\Component\Weblinks\Site\Helper\RouteHelper;
 use Joomla\Database\DatabaseAwareTrait;
-use Joomla\Database\DatabaseInterface;
-use Joomla\Database\DatabaseQuery;
-use Joomla\Event\DispatcherInterface;
+use Joomla\Database\QueryInterface;
+use Joomla\Event\SubscriberInterface;
 use Joomla\Registry\Registry;
-use Joomla\Utilities\ArrayHelper;
-
 
 use Joomla\CMS\Log\Log;
 
 Log::addLogger(
-    array('text_file' => 'debug-blocksearch.php'),
+    ['text_file' => 'debug-blocksearch.php'],
     Log::ALL,
-    array('plg_blockssearch') // change to your component/plugin name
+    ['plg_blockssearch']
 );
 
 /**
- * Allows indexing of certain Bespoke modules.
+ * Allows indexing of bespoke Blocks content.
  */
-final class BlocksSearch extends Adapter
+final class BlocksSearch extends Adapter implements SubscriberInterface
 {
     use DatabaseAwareTrait;
 
-    /**
-     * An internal flag whether plugin should listen any event.
-     *
-     * @var bool
-     *
-     * @since   4.3.0
-     */
-    protected static $enabled = false;
+    protected $context = 'Blocks';
 
-    /**
-     * The plugin identifier.
-     *
-     * @var    string
-     * @since  2.5
-     */
-    protected $context = 'BlocksSearch';
-
-    /**
-     * The extension name.
-     *
-     * @var    string
-     * @since  2.5
-     */
     protected $extension = 'com_blocks';
 
-    /**
-     * The sublayout to use when rendering the results.
-     *
-     * @var    string
-     * @since  2.5
-     */
-    #protected $layout = 'weblink';
+    protected $layout = 'page';
 
-    /**
-     * The type of content that the adapter indexes.
-     *
-     * @var    string
-     * @since  2.5
-     */
-    protected $type_title = 'BlocksSearch';
+    protected $type_title = 'Block Page';
 
-    /**
-     * Load the language file on instantiation.
-     *
-     * @var    boolean
-     * @since  3.1
-     */
+    protected $table = '#__menu';
+
     protected $autoloadLanguage = true;
 
-    /**
-     * Constructor
-     *
-     * @param   DispatcherInterface  $dispatcher
-     * @param   array                $config
-     * @param   DatabaseInterface    $database
-     */
-    public function __construct(DispatcherInterface $dispatcher, array $config, DatabaseInterface $database)
+    private const MENU_CONTEXT = 'com_menus.item';
+
+    private const MODULE_CONTEXT = 'com_modules.module';
+
+    private const ALLOWED_MODULE_TYPE = 'mod_blockstext';
+
+    public static function getSubscribedEvents(): array
     {
-        self::$enabled = true;
-
-        parent::__construct($dispatcher, $config);
-
-        $this->setDatabase($database);
+        return array_merge(
+            parent::getSubscribedEvents(),
+            [
+                'onFinderBeforeSave'  => 'onFinderBeforeSave',
+                'onFinderAfterSave'   => 'onFinderAfterSave',
+                'onFinderAfterDelete' => 'onFinderAfterDelete',
+                'onFinderChangeState' => 'onFinderChangeState',
+            ]
+        );
     }
 
-        /**
-     * Method to get the MenuItems.
-     *
-     *
-     * @return  array  Array of objects.
-     */
-    protected function getMenuItems()
+    protected function setup(): bool
     {
+        return ComponentHelper::isEnabled($this->extension);
+    }
 
-        $db = $this->getDatabase();
+    public function onFinderBeforeSave(FinderEvent\BeforeSaveEvent $event): void
+    {
+        $context = $event->getContext();
+        $row = $event->getItem();
+        $isNew = $event->getIsNew();
 
-        // Get the COM_BLOCKS component id:
-        $query = $db->getQuery(true);
-        $query->select($db->quoteName('extension_id'))
-              ->from($db->quoteName('#__extensions'))
-              ->where($db->quoteName('name') . ' = ' . $db->quote('com_blocks'));
-        $db->setQuery($query);
-
-        #Log::add('query 1: ' . (string) $query, \Joomla\CMS\Log\Log::INFO, 'plg_blockssearch');
-
-        $component_id = $db->loadResult();
-        #og::add('component_id: ' . (string) $component_id, \Joomla\CMS\Log\Log::INFO, 'plg_blockssearch');
-
-        // Get all Blocks menu items:
-        $query = $db->getQuery(true);
-        $query->select($db->quoteName(['id', 'title', 'alias', 'path', 'link', 'params']))
-              ->from($db->quoteName('#__menu'))
-              ->where($db->quoteName('component_id') . ' = ' . $component_id)
-              ->where($db->quoteName('access') . ' = 1')
-              ->where($db->quoteName('published') . ' = 1');
-        $db->setQuery($query);
-
-        #Log::add('query 2: ' . (string) $query, \Joomla\CMS\Log\Log::INFO, 'plg_blockssearch');
-
-        $menu_items = $db->loadAssocList();
-
-        #Log::add('menu_items: ' . print_r($menu_items, true), \Joomla\CMS\Log\Log::INFO, 'plg_blockssearch');
-
-        foreach ($menu_items as $key => $menu_item) {
-            Log::add('START', \Joomla\CMS\Log\Log::INFO, 'plg_blockssearch');
-            // Get all assigned module ids:
-            $module_ids = [];
-            $menu_item_params = json_decode($menu_item['params']);
-
-            if (empty($menu_item_params->rows)) {
-                unset($menu_items[$key]);
-                continue;
-            }
-
-            foreach ($menu_item_params->rows as $row) {
-                if (!empty($row->block_1_id)) {
-                    $module_ids[] = $row->block_1_id;
-                }
-                if (!empty($row->block_2_id)) {
-                    $module_ids[] = $row->block_2_id;
-                }
-                if (!empty($row->block_3_id)) {
-                    $module_ids[] = $row->block_3_id;
-                }
-                if (!empty($row->block_4_id)) {
-                    $module_ids[] = $row->block_4_id;
-                }
-            }
-
-            if (empty($module_ids)) {
-                continue;
-            }
-
-            unset($menu_item['params']);
-
-            Log::add('module_ids: ' . print_r($module_ids, true), \Joomla\CMS\Log\Log::INFO, 'plg_blockssearch');
-
-            // Get all module data:
-            $query = $db->getQuery(true);
-            $query->select('*')
-                  ->from($db->quoteName('#__modules'))
-                  ->where($db->quoteName('id') . ' IN (' . implode(',', $module_ids) . ')');
-            #Log::add('query 3: ' . (string) $query, \Joomla\CMS\Log\Log::INFO, 'plg_blockssearch');
-
-            $db->setQuery($query);
-
-            $modules = $db->loadAssocList();
-
-            #Log::add('modules: ' . print_r($modules, true), \Joomla\CMS\Log\Log::INFO, 'plg_blockssearch');
-
-            $start_date = false;
-            $summary = '';
-            foreach ($modules as $module) {
-                $module_params = json_decode($module['params']);
-                // Handle different types separately:
-                if ($module['module'] == 'mod_blockstext') {
-                    $summary .= $module['content'] . "\n\n";
-                } elseif ($module['module'] == 'mod_blocksvideo') {
-                    $summary .= $module_params->caption . "\n\n";
-                } elseif ($module['module'] == 'mod_blocksaccordion') {
-                    if (!empty($module_params->panels)) {
-                        foreach ($module_params->panels as $panel) {
-                            $summary .= $panel->panel_content . "\n\n";
-                        }
-                    }
-                } else {}
-
-                // Establish earliest start date:
-                $start_date = ($start_date == false)
-                            ? $module['publish_up']
-                            : min($start_date, $module['publish_up']);
-            }
-
-            #Log::add('summary: ' . $summary, \Joomla\CMS\Log\Log::INFO, 'plg_blockssearch');
-            #Log::add('start_date: ' . $start_date, \Joomla\CMS\Log\Log::INFO, 'plg_blockssearch');
-            if (empty($summary)) {
-                unset($menu_items[$key]);
-                continue;
-            }
-
-            $menu_item['summary']    = $summary;
-            $menu_item['start_date'] = (empty($start_date)) ? '2026-03-05 17:57:18' : $start_date;
-            //$menu_item['start_date'] = '2026-03-05 17:57:18';
-
-            $menu_items[$key] = $menu_item;
+        // Keep access tracking for menu items so Finder can hide restricted pages.
+        if ($context === self::MENU_CONTEXT && !$isNew) {
+            $this->checkItemAccess($row);
         }
-
-        Log::add('menu_items (after): ' . print_r($menu_items, true), \Joomla\CMS\Log\Log::INFO, 'plg_blockssearch');
-        return $menu_items;
     }
 
-    /**
-     * Method to get a list of content items to index.
-     *
-     * @param   integer         $offset  The list offset.
-     * @param   integer         $limit   The list limit.
-     * @param   QueryInterface  $query   A QueryInterface object. [optional]
-     *
-     * @return  Result[]  An array of Result objects.
-     *
-     * @since   2.5
-     * @throws  \Exception on database error.
-     */
-    protected function getItems($offset, $limit, $query = null)
+    public function onFinderAfterSave(FinderEvent\AfterSaveEvent $event): void
     {
-        $items = [];
+        $context = $event->getContext();
+        $row = $event->getItem();
+        $isNew = $event->getIsNew();
 
-        // Get the content items to index.
-        //$this->db->setQuery($this->getListQuery($query), $offset, $limit);
-        //$rows = $this->db->loadAssocList();
-        $rows = $this->getMenuItems();
-
-        // Convert the items to result objects.
-        foreach ($rows as $row) {
-            // Convert the item to a result object.
-            $item = ArrayHelper::toObject($row, Result::class);
-
-            // Sort out endcoding stuff:
-            #$item->summary  = $this->utf8_convert($item->summary);
-
-            // Set the item type.
-            $item->type_id = $this->type_id;
-
-            // Set the mime type.
-            $item->mime = $this->mime;
-
-            // Set the item layout.
-            $item->layout = $this->layout;
-
-            // Set the extension if present
-            if (isset($row->extension)) {
-                $item->extension = $row->extension;
+        if ($context === self::MENU_CONTEXT) {
+            if (!$isNew && $this->old_access != $row->access) {
+                $this->itemAccessChange($row);
             }
 
-            $item->url    = $item->path;
-            $item->route  = $item->path;
-            $item->state  = 1;
-            $item->access = 1;
+            $this->reindex((int) $row->id);
 
-            // Add the item to the stack.
-            $items[] = $item;
-        }
-        return $items;
-    }
-
-    /**
-     * Method to index an item. The item must be a Result object.
-     *
-     * @param   Result  $item  The item to index as an Result object.
-     *
-     * @return  void
-     *
-     * @throws  \Exception on database error.
-     * @since   2.5
-     */
-    protected function index(Result $item)
-    {
-        // Check if the extension is enabled
-        if (ComponentHelper::isEnabled($this->extension) == false) {
             return;
         }
 
-        $item->setLanguage();
+        if ($context === self::MODULE_CONTEXT && $this->isEligibleModule($row)) {
+            $this->reindexMenusForModule((int) $row->id);
+        }
+    }
+
+    public function onFinderAfterDelete(FinderEvent\AfterDeleteEvent $event): void
+    {
+        $context = $event->getContext();
+        $row = $event->getItem();
+
+        if ($context === self::MENU_CONTEXT) {
+            $this->remove((int) $row->id);
+
+            return;
+        }
+
+        if ($context === self::MODULE_CONTEXT && isset($row->id)) {
+            $this->reindexMenusForModule((int) $row->id);
+        }
+    }
+
+    public function onFinderChangeState(FinderEvent\AfterChangeStateEvent $event): void
+    {
+        $context = $event->getContext();
+        $pks = (array) $event->getPks();
+        $value = (int) $event->getValue();
+
+        if ($context === self::MENU_CONTEXT) {
+            $this->itemStateChange($pks, $value);
+
+            return;
+        }
+
+        if ($context === self::MODULE_CONTEXT) {
+            foreach ($pks as $pk) {
+                $module = $this->loadModuleRow((int) $pk);
+
+                if ($module && $this->isEligibleModule($module)) {
+                    $this->reindexMenusForModule((int) $pk);
+                }
+            }
+        }
+    }
+
+    protected function index(Result $item): void
+    {
+        $menuRow = $this->loadMenuRow((int) $item->id);
+
+        if ($menuRow === null) {
+            return;
+        }
+
+        $params = $this->decodeJson((string) $menuRow->params);
+        $moduleIds = $this->extractModuleIds($params);
+        $modules = $this->loadEligibleModules($moduleIds);
+
+        if ($modules === []) {
+            // Nothing indexable for this page, so remove any stale record.
+            $this->remove((int) $menuRow->id);
+
+            return;
+        }
+
+        $item->context = 'com_blocks.page';
+        $item->title = (string) $menuRow->title;
+        $item->summary = (string) $menuRow->title;
+        $item->body = $this->buildBodyFromModules($modules, $item, $params);
+        $item->state = (int) $menuRow->published;
+        #$item->state = (int) $menuRow->state;
+        $item->access = (int) $menuRow->access;
+        $item->language = (string) $menuRow->language;
+        $item->params = new Registry($menuRow->params ?? '{}');
+        $item->route = 'index.php?Itemid=' . (int) $menuRow->id;
+        #$item->route = 'index.php?option=com_blocks&view=blocks&id=' . (int) $menuRow->id;
+        $item->url = $item->route;
+        $item->start_date = '2026-05-01 08:00:00';
+
+        // Placeholder for extra Finder metadata if you later need it.
+        // $item->addTaxonomy('Type', 'Block Page');
+        // $item->addTaxonomy('Language', $item->language);
+
         $this->indexer->index($item);
     }
 
-    /**
-     * Method to setup the indexer to be run.
-     *
-     * @return  boolean  True on success.
-     *
-     * @since   2.5
-     */
-    protected function setup()
+    protected function getListQuery($query = null): QueryInterface
     {
-        return true;
+        $db = $this->getDatabase();
+        $componentId = (int) ComponentHelper::getComponent($this->extension)->id;
+
+        $query = $query instanceof QueryInterface ? $query : $db->getQuery(true);
+
+        $query
+            ->select(
+                $db->quoteName(
+                    [
+                        'a.id',
+                        'a.title',
+                        'a.alias',
+                        'a.link',
+                        'a.params',
+                        'a.published',
+                        'a.access',
+                        'a.language',
+                        'a.menutype',
+                        'a.parent_id',
+                        'a.component_id',
+                    ]
+                )
+            )
+            ->from($db->quoteName('#__menu', 'a'))
+            ->where($db->quoteName('a.type') . ' = ' . $db->quote('component'))
+            ->where($db->quoteName('a.client_id') . ' = 0')
+            ->where($db->quoteName('a.component_id') . ' = ' . $componentId);
+
+        return $query;
+    }
+
+    private function loadMenuRow(int $id): ?object
+    {
+        $db = $this->getDatabase();
+        $query = $db->getQuery(true)
+            ->select('*')
+            ->from($db->quoteName('#__menu'))
+            ->where($db->quoteName('id') . ' = ' . $id);
+
+        $db->setQuery($query);
+
+        $row = $db->loadObject();
+
+        return $row ?: null;
+    }
+
+    private function loadModuleRow(int $id): ?object
+    {
+        $db = $this->getDatabase();
+        $query = $db->getQuery(true)
+            ->select('*')
+            ->from($db->quoteName('#__modules'))
+            ->where($db->quoteName('id') . ' = ' . $id);
+
+        $db->setQuery($query);
+
+        $row = $db->loadObject();
+
+        return $row ?: null;
+    }
+
+    private function isEligibleModule(object $module): bool
+    {
+        if (!isset($module->module) || $module->module !== self::ALLOWED_MODULE_TYPE) {
+            return false;
+        }
+
+        $content = trim((string) ($module->content ?? ''));
+
+        return $content !== '';
+    }
+
+    private function loadEligibleModules(array $moduleIds): array
+    {
+        $moduleIds = array_values(array_unique(array_filter(array_map('intval', $moduleIds))));
+
+        if ($moduleIds === []) {
+            return [];
+        }
+
+        $db = $this->getDatabase();
+        $query = $db->getQuery(true)
+            ->select('*')
+            ->from($db->quoteName('#__modules'))
+            ->where($db->quoteName('id') . ' IN (' . implode(',', $moduleIds) . ')')
+            ->where($db->quoteName('module') . ' = ' . $db->quote(self::ALLOWED_MODULE_TYPE))
+            ->where($db->quoteName('published') . ' = 1')
+            ->where('TRIM(COALESCE(' . $db->quoteName('content') . ', \'\')) <> \'\'');
+
+        $db->setQuery($query);
+
+        return $db->loadObjectList() ?: [];
+    }
+
+    private function buildBodyFromModules(array $modules, Result $item, array $menuParams): string
+    {
+        $parts = [];
+
+        foreach ($modules as $module) {
+            $content = trim((string) ($module->content ?? ''));
+
+            if ($content === '') {
+                continue;
+            }
+
+            // TODO: run any extra content filtering or placeholder replacement here.
+            // For example, you might strip module wrapper markup or normalise links.
+            $parts[] = $content;
+        }
+
+        return implode("\n\n", $parts);
+    }
+
+    private function extractModuleIds(array $params): array
+    {
+        $moduleIds = [];
+
+        $walker = function ($value) use (&$walker, &$moduleIds): void {
+            if (is_array($value)) {
+                foreach ($value as $key => $child) {
+                    if (is_string($key) && preg_match('/^block_\d+_id$/', $key)) {
+                        $id = (int) $child;
+
+                        if ($id > 0) {
+                            $moduleIds[] = $id;
+                        }
+                    }
+
+                    $walker($child);
+                }
+            }
+        };
+
+        $walker($params);
+
+        return array_values(array_unique(array_filter($moduleIds)));
+    }
+
+    private function decodeJson(string $json): array
+    {
+        if ($json === '') {
+            return [];
+        }
+
+        $decoded = json_decode($json, true);
+
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    private function reindexMenusForModule(int $moduleId): void
+    {
+        foreach ($this->findMenuIdsUsingModule($moduleId) as $menuId) {
+            $this->reindex((int) $menuId);
+        }
+    }
+
+    private function findMenuIdsUsingModule(int $moduleId): array
+    {
+        $db = $this->getDatabase();
+        $componentId = (int) ComponentHelper::getComponent($this->extension)->id;
+        $search = '"' . $moduleId . '"';
+
+        $query = $db->getQuery(true)
+            ->select($db->quoteName('id'))
+            ->from($db->quoteName('#__menu'))
+            ->where($db->quoteName('type') . ' = ' . $db->quote('component'))
+            ->where($db->quoteName('client_id') . ' = 0')
+            ->where($db->quoteName('component_id') . ' = ' . $componentId)
+            ->where(
+                '(' . implode(' OR ', [
+                    $db->quoteName('params') . ' LIKE ' . $db->quote('%"block_1_id":' . $search . '%'),
+                    $db->quoteName('params') . ' LIKE ' . $db->quote('%"block_2_id":' . $search . '%'),
+                    $db->quoteName('params') . ' LIKE ' . $db->quote('%"block_3_id":' . $search . '%'),
+                    $db->quoteName('params') . ' LIKE ' . $db->quote('%"block_4_id":' . $search . '%'),
+                ]) . ')'
+            );
+
+        $db->setQuery($query);
+
+        return array_map('intval', $db->loadColumn() ?: []);
     }
 }
